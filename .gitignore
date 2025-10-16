@@ -53,3 +53,15 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+# Coverage files
+*.gcda
+*.gcno
+*.gcov
+coverage/
+
+# Build directories
+bin/
+
+# IMPORTANT: Do NOT ignore deps/RedisModulesSDK/
+# The bundled SDK should be committed to version control!
