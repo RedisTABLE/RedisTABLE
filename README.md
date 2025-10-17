@@ -337,6 +337,7 @@ See [PRODUCTION_NOTES.md](PRODUCTION_NOTES.md) for detailed deployment guide.
 
 ## Documentation
 
+- [INTRODUCTION.md](INTRODUCTION.md) - Why RedisTABLE and benefits for developers
 - [USER_GUIDE.md](USER_GUIDE.md) - Comprehensive user guide with examples
 - [PRODUCTION_NOTES.md](PRODUCTION_NOTES.md) - Production deployment guide
 - [CONFIGURATION_GUIDE.md](CONFIGURATION_GUIDE.md) - Configuration options
