@@ -507,15 +507,15 @@ $REDIS_CLI TABLE.SCHEMA.CREATE idxtest.data NAME:string:hash VALUE:integer:hash 
 
 test_start "Insert creates index entries"
 $REDIS_CLI TABLE.INSERT idxtest.data NAME=Test VALUE=100 > /dev/null
-result=$($REDIS_CLI SMEMBERS "idx:idxtest.data:NAME:Test")
+result=$($REDIS_CLI SMEMBERS "{idxtest.data}:idx:NAME:Test")
 assert_contains "1" "$result" "Index should contain row ID"
 
 test_start "Update maintains indexes"
 $REDIS_CLI TABLE.UPDATE idxtest.data WHERE NAME=Test SET NAME=Updated > /dev/null
-result=$($REDIS_CLI SMEMBERS "idx:idxtest.data:NAME:Updated")
+result=$($REDIS_CLI SMEMBERS "{idxtest.data}:idx:NAME:Updated")
 assert_contains "1" "$result" "Updated index should contain row ID"
 
-old_index=$($REDIS_CLI SMEMBERS "idx:idxtest.data:NAME:Test")
+old_index=$($REDIS_CLI SMEMBERS "{idxtest.data}:idx:NAME:Test")
 if [[ -z "$old_index" ]] || [[ "$old_index" == *"(empty"* ]]; then
     echo -e "${GREEN}✓ PASS${NC}: Old index entry removed"
     PASSED=$((PASSED + 1))
@@ -526,7 +526,7 @@ fi
 
 test_start "Delete removes index entries"
 $REDIS_CLI TABLE.DELETE idxtest.data WHERE NAME=Updated > /dev/null
-result=$($REDIS_CLI SMEMBERS "idx:idxtest.data:NAME:Updated")
+result=$($REDIS_CLI SMEMBERS "{idxtest.data}:idx:NAME:Updated")
 if [[ -z "$result" ]] || [[ "$result" == *"(empty"* ]]; then
     echo -e "${GREEN}✓ PASS${NC}: Index entry removed after delete"
     PASSED=$((PASSED + 1))

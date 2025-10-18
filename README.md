@@ -1,10 +1,10 @@
 # RedisTABLE - SQL-like Tables for Redis
 
-**Version**: 1.0.0  
+**Version**: 1.1.0  
 **Status**: Production-Ready  
 **License**: MIT
 
-A Redis module that implements SQL-like tables with full CRUD operations, indexing, and query capabilities.
+A Redis module that implements SQL-like tables with full CRUD operations, indexing, and query capabilities. **Now with full Redis Cluster support!**
 
 ---
 
@@ -24,6 +24,7 @@ A Redis module that implements SQL-like tables with full CRUD operations, indexi
 - ✅ **Memory Safe** - Automatic memory management
 - ✅ **Comprehensive Testing** - 93 tests, 100% passing
 - ✅ **Client Compatible** - Works with all Redis clients
+- ✅ **Redis Cluster Support** - Hash tags ensure table co-location on same shard
 
 ---
 
@@ -470,13 +471,33 @@ MIT License - See LICENSE file for details
 
 ---
 
-## Changelog
+## Documentation
 
-See [CHANGELOG.md](CHANGELOG.md) for version history.
+- **[CLUSTER_SUPPORT.md](CLUSTER_SUPPORT.md)** - Redis Cluster deployment guide
+- **[USER_GUIDE.md](USER_GUIDE.md)** - Comprehensive user guide
+- **[PRODUCTION_NOTES.md](PRODUCTION_NOTES.md)** - Production deployment
+- **[CONFIGURATION_GUIDE.md](CONFIGURATION_GUIDE.md)** - Configuration options
+- **[INDEX_TYPES_GUIDE.md](INDEX_TYPES_GUIDE.md)** - Index types and performance
 
 ---
 
-**Version**: 1.0.0  
-**Release Date**: 2025-10-16  
-**Status**: Production-Ready  
+## Changelog
+
+### v1.1.0 (2025-10-18)
+- ✨ **NEW**: Full Redis Cluster support with hash tags
+- ✨ All table data co-located on same shard for efficient querying
+- ✨ No cross-shard queries required
+- ✅ All 93 tests passing
+
+### v1.0.0 (2025-10-16)
+- Initial release with full CRUD operations
+- Hash and btree index support
+- Comparison and logical operators
+- Production-ready with comprehensive testing
+
+---
+
+**Version**: 1.1.0  
+**Release Date**: 2025-10-18  
+**Status**: Production-Ready with Redis Cluster Support  
 **Build**: `make build && make test`

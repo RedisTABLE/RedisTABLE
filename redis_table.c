@@ -6,6 +6,9 @@
  * Description: This program is a Redis module that implements SQL-like tables 
  * with full CRUD operations, explicit index control, comparison operators, 
  * and support for multiple data types.
+ * 
+ * Redis Cluster Support: All keys use hash tags {namespace.table} to ensure
+ * all rows of a table are co-located on the same shard for efficient querying.
  */
 
 #include "redismodule.h"
@@ -18,9 +21,9 @@
 
 // Module version
 #define REDISTABLE_VERSION_MAJOR 1
-#define REDISTABLE_VERSION_MINOR 0
+#define REDISTABLE_VERSION_MINOR 1
 #define REDISTABLE_VERSION_PATCH 0
-#define REDISTABLE_VERSION_STRING "1.0.0"
+#define REDISTABLE_VERSION_STRING "1.1.0"
 
 // Default maximum number of rows to scan in a single query operation
 #define DEFAULT_MAX_ROWS_SCAN_LIMIT 100000
@@ -90,7 +93,7 @@ static int split_condition(RedisModuleCtx *ctx, RedisModuleString *in,
 // Check if column is indexed
 static int is_column_indexed(RedisModuleCtx *ctx, RedisModuleString *table, RedisModuleString *col) {
     RedisModule_AutoMemory(ctx);
-    RedisModuleString *metaKey = fmt(ctx, "idx:meta:%s", table);
+    RedisModuleString *metaKey = fmt(ctx, "{%s}:idx:meta", table);
     RedisModuleCallReply *r = RedisModule_Call(ctx, "SISMEMBER", "ss", metaKey, col);
     return (r && RedisModule_CallReplyType(r) == REDISMODULE_REPLY_INTEGER && 
             RedisModule_CallReplyInteger(r) == 1) ? 1 : 0;
@@ -136,13 +139,13 @@ static int compare_values(const char *v1, const char *v2, const char *op, const 
 
 static int ensure_schema_exists(RedisModuleCtx *ctx, RedisModuleString *schemaName) {
     RedisModule_AutoMemory(ctx);
-    RedisModuleKey *k = RedisModule_OpenKey(ctx, fmt(ctx, "schema:%s", schemaName), REDISMODULE_READ);
+    RedisModuleKey *k = RedisModule_OpenKey(ctx, fmt(ctx, "schema:{%s}", schemaName), REDISMODULE_READ);
     return RedisModule_KeyType(k) != REDISMODULE_KEYTYPE_EMPTY ? REDISMODULE_OK : REDISMODULE_ERR;
 }
 
 static int ensure_table_exists(RedisModuleCtx *ctx, RedisModuleString *fullTableName) {
     RedisModule_AutoMemory(ctx);
-    RedisModuleKey *k = RedisModule_OpenKey(ctx, fmt(ctx, "schema:%s", fullTableName), REDISMODULE_READ);
+    RedisModuleKey *k = RedisModule_OpenKey(ctx, fmt(ctx, "schema:{%s}", fullTableName), REDISMODULE_READ);
     return RedisModule_KeyType(k) == REDISMODULE_KEYTYPE_HASH ? REDISMODULE_OK : REDISMODULE_ERR;
 }
 
@@ -163,7 +166,7 @@ static RedisModuleString* extract_table(RedisModuleCtx *ctx, RedisModuleString *
 static int validate_and_typecheck(RedisModuleCtx *ctx, RedisModuleString *fullTableName,
                                   RedisModuleString *col, RedisModuleString *val) {
     RedisModule_AutoMemory(ctx);
-    RedisModuleKey *schemaKey = RedisModule_OpenKey(ctx, fmt(ctx, "schema:%s", fullTableName), REDISMODULE_READ);
+    RedisModuleKey *schemaKey = RedisModule_OpenKey(ctx, fmt(ctx, "schema:{%s}", fullTableName), REDISMODULE_READ);
     if (RedisModule_KeyType(schemaKey) != REDISMODULE_KEYTYPE_HASH) return REDISMODULE_ERR;
     RedisModuleString *typeStr = NULL;
     if (RedisModule_HashGet(schemaKey, REDISMODULE_HASH_NONE, col, &typeStr, NULL) != REDISMODULE_OK || !typeStr) return REDISMODULE_ERR;
@@ -218,7 +221,7 @@ static int TableNamespaceCreateCommand(RedisModuleCtx *ctx, RedisModuleString **
         return REDISMODULE_ERR;
     }
 
-    RedisModuleKey *k = RedisModule_OpenKey(ctx, fmt(ctx, "schema:%s", argv[1]), REDISMODULE_WRITE);
+    RedisModuleKey *k = RedisModule_OpenKey(ctx, fmt(ctx, "schema:{%s}", argv[1]), REDISMODULE_WRITE);
     if (RedisModule_KeyType(k) != REDISMODULE_KEYTYPE_EMPTY)
         return RedisModule_ReplyWithError(ctx, "ERR namespace already exists");
     RedisModule_StringSet(k, RedisModule_CreateString(ctx, "1", 1));
@@ -260,7 +263,7 @@ static int TableNamespaceViewCommand(RedisModuleCtx *ctx, RedisModuleString **ar
         // Call SCAN with cursor as string, MATCH pattern
         RedisModuleCallReply *scanReply = RedisModule_Call(ctx, "SCAN", "ccc", 
                                                             cursorBuf,
-                                                            "MATCH", "schema:*.*");
+                                                            "MATCH", "schema:{*.*}");
         if (!scanReply || RedisModule_CallReplyType(scanReply) != REDISMODULE_REPLY_ARRAY) {
             RedisModule_Free(entries);
             return RedisModule_ReplyWithArray(ctx, 0);
@@ -289,10 +292,10 @@ static int TableNamespaceViewCommand(RedisModuleCtx *ctx, RedisModuleString **ar
             const char *keystr = RedisModule_CallReplyStringPtr(keyReply, &keylen);
             
             // Skip if not in format "schema:namespace.table"
-            if (keylen < 8 || strncmp(keystr, "schema:", 7) != 0) continue;
+            if (keylen < 10 || strncmp(keystr, "schema:{", 8) != 0) continue;
             
-            const char *fullname = keystr + 7;  // Skip "schema:"
-            size_t fullname_len = keylen - 7;
+            const char *fullname = keystr + 8;  // Skip "schema:{"
+            size_t fullname_len = keylen - 9;  // Exclude trailing }
             
             // Find the dot separator
             const char *dot = memchr(fullname, '.', fullname_len);
@@ -362,7 +365,7 @@ static int TableSchemaViewCommand(RedisModuleCtx *ctx, RedisModuleString **argv,
         return RedisModule_ReplyWithError(ctx, "ERR table schema does not exist");
     
     // Get all columns from table schema
-    RedisModuleCallReply *fields = RedisModule_Call(ctx, "HGETALL", "s", fmt(ctx, "schema:%s", argv[1]));
+    RedisModuleCallReply *fields = RedisModule_Call(ctx, "HGETALL", "s", fmt(ctx, "schema:{%s}", argv[1]));
     if (!fields || RedisModule_CallReplyType(fields) != REDISMODULE_REPLY_ARRAY) {
         return RedisModule_ReplyWithArray(ctx, 0);
     }
@@ -415,11 +418,11 @@ static int TableSchemaCreateCommand(RedisModuleCtx *ctx, RedisModuleString **arg
     if (ensure_schema_exists(ctx, schema) != REDISMODULE_OK)
         return RedisModule_ReplyWithError(ctx, "ERR namespace does not exist");
 
-    RedisModuleKey *schemaKey = RedisModule_OpenKey(ctx, fmt(ctx, "schema:%s", argv[1]), REDISMODULE_WRITE);
+    RedisModuleKey *schemaKey = RedisModule_OpenKey(ctx, fmt(ctx, "schema:{%s}", argv[1]), REDISMODULE_WRITE);
     if (RedisModule_KeyType(schemaKey) != REDISMODULE_KEYTYPE_EMPTY)
         return RedisModule_ReplyWithError(ctx, "ERR table schema already exists");
 
-    RedisModuleString *metaKey = fmt(ctx, "idx:meta:%s", argv[1]);
+    RedisModuleString *metaKey = fmt(ctx, "{%s}:idx:meta", argv[1]);
 
     // Parse col:type:index (index is optional, defaults to none)
     for (int i = 2; i < argc; i++) {
@@ -471,8 +474,8 @@ static int TableSchemaAlterCommand(RedisModuleCtx *ctx, RedisModuleString **argv
     size_t oplen; const char *op = RedisModule_StringPtrLen(argv[2], &oplen);
     size_t targetlen; const char *target = RedisModule_StringPtrLen(argv[3], &targetlen);
     
-    RedisModuleKey *schemaKey = RedisModule_OpenKey(ctx, fmt(ctx, "schema:%s", argv[1]), REDISMODULE_WRITE);
-    RedisModuleString *metaKey = fmt(ctx, "idx:meta:%s", argv[1]);
+    RedisModuleKey *schemaKey = RedisModule_OpenKey(ctx, fmt(ctx, "schema:{%s}", argv[1]), REDISMODULE_WRITE);
+    RedisModuleString *metaKey = fmt(ctx, "{%s}:idx:meta", argv[1]);
     
     if (oplen == 3 && strncasecmp(op, "ADD", 3) == 0) {
         if (targetlen == 6 && strncasecmp(target, "COLUMN", 6) == 0) {
@@ -520,20 +523,20 @@ static int TableSchemaAlterCommand(RedisModuleCtx *ctx, RedisModuleString **argv
             RedisModule_Call(ctx, "SADD", "ss", metaKey, col);
             
             // Build index for all existing rows
-            RedisModuleString *rowsSet = fmt(ctx, "rows:%s", argv[1]);
+            RedisModuleString *rowsSet = fmt(ctx, "{%s}:rows", argv[1]);
             RedisModuleCallReply *rows = RedisModule_Call(ctx, "SMEMBERS", "s", rowsSet);
             if (rows && RedisModule_CallReplyType(rows) == REDISMODULE_REPLY_ARRAY) {
                 size_t n = RedisModule_CallReplyLength(rows);
                 for (size_t i = 0; i < n; i++) {
                     RedisModuleCallReply *e = RedisModule_CallReplyArrayElement(rows, i);
                     RedisModuleString *rowId = RedisModule_CreateStringFromCallReply(e);
-                    RedisModuleString *rowKey = fmt2(ctx, "%s:%s", argv[1], rowId);
+                    RedisModuleString *rowKey = fmt2(ctx, "{%s}:%s", argv[1], rowId);
                     
                     // Get column value from row
                     RedisModuleCallReply *valReply = RedisModule_Call(ctx, "HGET", "ss", rowKey, col);
                     if (valReply && RedisModule_CallReplyType(valReply) == REDISMODULE_REPLY_STRING) {
                         RedisModuleString *val = RedisModule_CreateStringFromCallReply(valReply);
-                        RedisModuleString *idxKey = fmt3(ctx, "idx:%s:%s:%s", argv[1], col, val);
+                        RedisModuleString *idxKey = fmt3(ctx, "{%s}:idx:%s:%s", argv[1], col, val);
                         RedisModule_Call(ctx, "SADD", "ss", idxKey, rowId);
                     }
                 }
@@ -555,8 +558,8 @@ static int TableSchemaAlterCommand(RedisModuleCtx *ctx, RedisModuleString **argv
             
             // Delete all index keys for this column using SCAN (NON-ATOMIC - slow)
             // RACE CONDITION: Keys being deleted while queries might try to use them
-            // Build pattern: idx:table:col:*
-            RedisModuleString *pattern = fmt2(ctx, "idx:%s:%s:*", argv[1], col);
+            // Build pattern: {table}:idx:col:*
+            RedisModuleString *pattern = fmt2(ctx, "{%s}:idx:%s:*", argv[1], col);
             size_t patternLen;
             const char *patternStr = RedisModule_StringPtrLen(pattern, &patternLen);
             
@@ -611,14 +614,14 @@ static int TableInsertCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int
     if (ensure_table_exists(ctx, argv[1]) != REDISMODULE_OK)
         return RedisModule_ReplyWithError(ctx, "ERR table schema does not exist");
 
-    RedisModuleString *idKey = fmt(ctx, "table:%s:id", argv[1]);
+    RedisModuleString *idKey = fmt(ctx, "{%s}:id", argv[1]);
     RedisModuleCallReply *idReply = RedisModule_Call(ctx, "INCR", "s", idKey);
     long long idNum = idReply ? RedisModule_CallReplyInteger(idReply) : 0;
     RedisModuleString *rowId = RedisModule_CreateStringFromLongLong(ctx, idNum);
 
-    RedisModuleString *rowKey = fmt2(ctx, "%s:%s", argv[1], rowId);
+    RedisModuleString *rowKey = fmt2(ctx, "{%s}:%s", argv[1], rowId);
     RedisModuleKey *row = RedisModule_OpenKey(ctx, rowKey, REDISMODULE_WRITE);
-    RedisModuleString *rowsSet = fmt(ctx, "rows:%s", argv[1]);
+    RedisModuleString *rowsSet = fmt(ctx, "{%s}:rows", argv[1]);
 
     for (int i = 2; i < argc; i++) {
         RedisModuleString *col=NULL, *val=NULL;
@@ -631,7 +634,7 @@ static int TableInsertCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int
         
         // Only create index if column is indexed
         if (is_column_indexed(ctx, argv[1], col)) {
-            RedisModuleString *idxKey = fmt3(ctx, "idx:%s:%s:%s", argv[1], col, val);
+            RedisModuleString *idxKey = fmt3(ctx, "{%s}:idx:%s:%s", argv[1], col, val);
             RedisModule_Call(ctx, "SADD", "ss", idxKey, rowId);
         }
     }
@@ -657,7 +660,7 @@ static void dict_add_set_members(RedisModuleCtx *ctx, RedisModuleDict *dict, Red
 static int dict_filter_condition(RedisModuleCtx *ctx, RedisModuleDict *dict, RedisModuleString *table,
                                   RedisModuleString *col, const char *op, RedisModuleString *val) {
     // Get column type
-    RedisModuleKey *schemaKey = RedisModule_OpenKey(ctx, fmt(ctx, "schema:%s", table), REDISMODULE_READ);
+    RedisModuleKey *schemaKey = RedisModule_OpenKey(ctx, fmt(ctx, "schema:{%s}", table), REDISMODULE_READ);
     RedisModuleString *typeStr = NULL;
     RedisModule_HashGet(schemaKey, REDISMODULE_HASH_NONE, col, &typeStr, NULL);
     const char *type = "string";
@@ -690,7 +693,7 @@ static int dict_filter_condition(RedisModuleCtx *ctx, RedisModuleDict *dict, Red
             return -1; // Scan limit exceeded
         }
         
-        RedisModuleString *rowKey = fmt2(ctx, "%s:%s", table, key);
+        RedisModuleString *rowKey = fmt2(ctx, "{%s}:%s", table, key);
         RedisModuleCallReply *v = RedisModule_Call(ctx, "HGET", "ss", rowKey, col);
         int keep = 0;
         if (v && RedisModule_CallReplyType(v) == REDISMODULE_REPLY_STRING) {
@@ -738,7 +741,7 @@ static int TableSelectCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int
 
     RedisModuleDict *ids = RedisModule_CreateDict(ctx);
     if (wherePos == -1) {
-        dict_add_set_members(ctx, ids, fmt(ctx, "rows:%s", argv[1]));
+        dict_add_set_members(ctx, ids, fmt(ctx, "{%s}:rows", argv[1]));
     } else {
         int i = wherePos + 1;
         int haveSeed = 0;
@@ -755,7 +758,7 @@ static int TableSelectCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int
                 }
                 // For comparison operators, we need to scan all rows
                 if (!haveSeed) {
-                    dict_add_set_members(ctx, ids, fmt(ctx, "rows:%s", argv[1]));
+                    dict_add_set_members(ctx, ids, fmt(ctx, "{%s}:rows", argv[1]));
                     haveSeed = 1;
                 }
                 if (dict_filter_condition(ctx, ids, argv[1], col, op, val) != 0) {
@@ -765,7 +768,7 @@ static int TableSelectCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int
             } else {
                 // Indexed equality search
                 if (!haveSeed) {
-                    dict_add_set_members(ctx, ids, fmt3(ctx, "idx:%s:%s:%s", argv[1], col, val));
+                    dict_add_set_members(ctx, ids, fmt3(ctx, "{%s}:idx:%s:%s", argv[1], col, val));
                     haveSeed = 1; i++;
                 } else {
                     size_t opl; const char *ops = RedisModule_StringPtrLen(argv[i-1], &opl);
@@ -775,7 +778,7 @@ static int TableSelectCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int
                         }
                         i++;
                     } else if (opl==2 && strncasecmp(ops, "OR",2)==0) {
-                        dict_add_set_members(ctx, ids, fmt3(ctx, "idx:%s:%s:%s", argv[1], col, val));
+                        dict_add_set_members(ctx, ids, fmt3(ctx, "{%s}:idx:%s:%s", argv[1], col, val));
                         i++;
                     } else {
                         return RedisModule_ReplyWithError(ctx, "ERR expected AND/OR between conditions");
@@ -803,7 +806,7 @@ static int TableSelectCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int
     RedisModule_ReplyWithArray(ctx, rowCount);
     it = RedisModule_DictIteratorStartC(ids, "^", NULL, 0);
     while ((id = RedisModule_DictNext(ctx, it, &dummy)) != NULL) {
-        RedisModuleString *rowKey = fmt2(ctx, "%s:%s", argv[1], id);
+        RedisModuleString *rowKey = fmt2(ctx, "{%s}:%s", argv[1], id);
         RedisModuleCallReply *all = RedisModule_Call(ctx, "HGETALL", "s", rowKey);
         if (!all || RedisModule_CallReplyType(all) != REDISMODULE_REPLY_ARRAY) {
             RedisModule_ReplyWithNull(ctx);
@@ -826,10 +829,10 @@ static void update_index_for_change(RedisModuleCtx *ctx, RedisModuleString *tabl
     if (!is_column_indexed(ctx, table, col)) return;
     if (oldv && RedisModule_StringCompare(oldv, newv) == 0) return;
     if (oldv) {
-        RedisModuleString *oldIdx = fmt3(ctx, "idx:%s:%s:%s", table, col, oldv);
+        RedisModuleString *oldIdx = fmt3(ctx, "{%s}:idx:%s:%s", table, col, oldv);
         RedisModule_Call(ctx, "SREM", "ss", oldIdx, rowId);
     }
-    RedisModuleString *newIdx = fmt3(ctx, "idx:%s:%s:%s", table, col, newv);
+    RedisModuleString *newIdx = fmt3(ctx, "{%s}:idx:%s:%s", table, col, newv);
     RedisModule_Call(ctx, "SADD", "ss", newIdx, rowId);
 }
 
@@ -855,7 +858,7 @@ static int TableUpdateCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int
     
     RedisModuleDict *ids = RedisModule_CreateDict(ctx);
     if (whereStart >= setPos) {
-        dict_add_set_members(ctx, ids, fmt(ctx, "rows:%s", argv[1]));
+        dict_add_set_members(ctx, ids, fmt(ctx, "{%s}:rows", argv[1]));
     } else {
         int i = whereStart;
         int haveSeed = 0;
@@ -867,7 +870,7 @@ static int TableUpdateCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int
             
             if (strcmp(op, "=") == 0 && is_column_indexed(ctx, argv[1], col)) {
                 if (!haveSeed) {
-                    dict_add_set_members(ctx, ids, fmt3(ctx, "idx:%s:%s:%s", argv[1], col, val));
+                    dict_add_set_members(ctx, ids, fmt3(ctx, "{%s}:idx:%s:%s", argv[1], col, val));
                     haveSeed = 1; i++;
                 } else {
                     size_t opl; const char *ops = RedisModule_StringPtrLen(argv[i-1], &opl);
@@ -877,13 +880,13 @@ static int TableUpdateCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int
                         }
                         i++;
                     } else if (opl==2 && strncasecmp(ops, "OR",2)==0) {
-                        dict_add_set_members(ctx, ids, fmt3(ctx, "idx:%s:%s:%s", argv[1], col, val));
+                        dict_add_set_members(ctx, ids, fmt3(ctx, "{%s}:idx:%s:%s", argv[1], col, val));
                         i++;
                     } else return RedisModule_ReplyWithError(ctx, "ERR expected AND/OR between conditions");
                 }
             } else {
                 if (!haveSeed) {
-                    dict_add_set_members(ctx, ids, fmt(ctx, "rows:%s", argv[1]));
+                    dict_add_set_members(ctx, ids, fmt(ctx, "{%s}:rows", argv[1]));
                     haveSeed = 1;
                 }
                 if (dict_filter_condition(ctx, ids, argv[1], col, op, val) != 0) {
@@ -905,7 +908,7 @@ static int TableUpdateCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int
     RedisModuleDictIter *it = RedisModule_DictIteratorStartC(ids, "^", NULL, 0);
     RedisModuleString *id; void *dummy;
     while ((id = RedisModule_DictNext(ctx, it, &dummy)) != NULL) {
-        RedisModuleString *rowKey = fmt2(ctx, "%s:%s", argv[1], id);
+        RedisModuleString *rowKey = fmt2(ctx, "{%s}:%s", argv[1], id);
         for (int j = setPos + 1; j < argc; j++) {
             RedisModuleString *col=NULL,*val=NULL;
             char op[3];
@@ -943,7 +946,7 @@ static int TableDeleteCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int
     }
 
     if (!hasWhere) {
-        dict_add_set_members(ctx, ids, fmt(ctx, "rows:%s", argv[1]));
+        dict_add_set_members(ctx, ids, fmt(ctx, "{%s}:rows", argv[1]));
     } else {
         int i = 3;
         int haveSeed = 0;
@@ -955,7 +958,7 @@ static int TableDeleteCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int
             
             if (strcmp(op, "=") == 0 && is_column_indexed(ctx, argv[1], col)) {
                 if (!haveSeed) {
-                    dict_add_set_members(ctx, ids, fmt3(ctx, "idx:%s:%s:%s", argv[1], col, val));
+                    dict_add_set_members(ctx, ids, fmt3(ctx, "{%s}:idx:%s:%s", argv[1], col, val));
                     haveSeed=1; i++;
                 } else {
                     size_t opl; const char *ops = RedisModule_StringPtrLen(argv[i-1], &opl);
@@ -965,13 +968,13 @@ static int TableDeleteCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int
                         }
                         i++;
                     } else if (opl==2 && strncasecmp(ops, "OR",2)==0) {
-                        dict_add_set_members(ctx, ids, fmt3(ctx, "idx:%s:%s:%s", argv[1], col, val));
+                        dict_add_set_members(ctx, ids, fmt3(ctx, "{%s}:idx:%s:%s", argv[1], col, val));
                         i++;
                     } else return RedisModule_ReplyWithError(ctx, "ERR expected AND/OR between conditions");
                 }
             } else {
                 if (!haveSeed) {
-                    dict_add_set_members(ctx, ids, fmt(ctx, "rows:%s", argv[1]));
+                    dict_add_set_members(ctx, ids, fmt(ctx, "{%s}:rows", argv[1]));
                     haveSeed = 1;
                 }
                 if (dict_filter_condition(ctx, ids, argv[1], col, op, val) != 0) {
@@ -990,14 +993,14 @@ static int TableDeleteCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int
     }
 
     long long deleted = 0;
-    RedisModuleString *rowsSet = fmt(ctx, "rows:%s", argv[1]);
+    RedisModuleString *rowsSet = fmt(ctx, "{%s}:rows", argv[1]);
 
     RedisModuleDictIter *it = RedisModule_DictIteratorStartC(ids, "^", NULL, 0);
     RedisModuleString *id; void *dummy;
     while ((id = RedisModule_DictNext(ctx, it, &dummy)) != NULL) {
-        RedisModuleString *rowKey = fmt2(ctx, "%s:%s", argv[1], id);
+        RedisModuleString *rowKey = fmt2(ctx, "{%s}:%s", argv[1], id);
 
-        RedisModuleCallReply *fields = RedisModule_Call(ctx, "HKEYS", "s", fmt(ctx, "schema:%s", argv[1]));
+        RedisModuleCallReply *fields = RedisModule_Call(ctx, "HKEYS", "s", fmt(ctx, "schema:{%s}", argv[1]));
         if (fields && RedisModule_CallReplyType(fields) == REDISMODULE_REPLY_ARRAY) {
             size_t n = RedisModule_CallReplyLength(fields);
             for (size_t i = 0; i < n; i++) {
@@ -1008,7 +1011,7 @@ static int TableDeleteCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int
                     RedisModuleCallReply *oldr = RedisModule_Call(ctx, "HGET", "ss", rowKey, col);
                     if (oldr && RedisModule_CallReplyType(oldr) == REDISMODULE_REPLY_STRING) {
                         RedisModuleString *oldv = RedisModule_CreateStringFromCallReply(oldr);
-                        RedisModuleString *idxKey = fmt3(ctx, "idx:%s:%s:%s", argv[1], col, oldv);
+                        RedisModuleString *idxKey = fmt3(ctx, "{%s}:idx:%s:%s", argv[1], col, oldv);
                         RedisModule_Call(ctx, "SREM", "ss", idxKey, id);
                     }
                 }
@@ -1041,16 +1044,16 @@ static int TableDropCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int a
         return RedisModule_ReplyWithError(ctx, "ERR Invalid parameter. Use FORCE to confirm table removal");
     }
 
-    RedisModuleString *rowsSet = fmt(ctx, "rows:%s", argv[1]);
+    RedisModuleString *rowsSet = fmt(ctx, "{%s}:rows", argv[1]);
     RedisModuleCallReply *rows = RedisModule_Call(ctx, "SMEMBERS", "s", rowsSet);
     if (rows && RedisModule_CallReplyType(rows) == REDISMODULE_REPLY_ARRAY) {
         size_t n = RedisModule_CallReplyLength(rows);
         for (size_t i = 0; i < n; i++) {
             RedisModuleCallReply *e = RedisModule_CallReplyArrayElement(rows, i);
             RedisModuleString *id = RedisModule_CreateStringFromCallReply(e);
-            RedisModuleString *rowKey = fmt2(ctx, "%s:%s", argv[1], id);
+            RedisModuleString *rowKey = fmt2(ctx, "{%s}:%s", argv[1], id);
 
-            RedisModuleCallReply *fields = RedisModule_Call(ctx, "HKEYS", "s", fmt(ctx, "schema:%s", argv[1]));
+            RedisModuleCallReply *fields = RedisModule_Call(ctx, "HKEYS", "s", fmt(ctx, "schema:{%s}", argv[1]));
             if (fields && RedisModule_CallReplyType(fields) == REDISMODULE_REPLY_ARRAY) {
                 size_t fn = RedisModule_CallReplyLength(fields);
                 for (size_t j = 0; j < fn; j++) {
@@ -1061,7 +1064,7 @@ static int TableDropCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int a
                         RedisModuleCallReply *oldr = RedisModule_Call(ctx, "HGET", "ss", rowKey, col);
                         if (oldr && RedisModule_CallReplyType(oldr) == REDISMODULE_REPLY_STRING) {
                             RedisModuleString *oldv = RedisModule_CreateStringFromCallReply(oldr);
-                            RedisModuleString *idxKey = fmt3(ctx, "idx:%s:%s:%s", argv[1], col, oldv);
+                            RedisModuleString *idxKey = fmt3(ctx, "{%s}:idx:%s:%s", argv[1], col, oldv);
                             RedisModule_Call(ctx, "SREM", "ss", idxKey, id);
                         }
                     }
@@ -1073,9 +1076,9 @@ static int TableDropCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int a
         }
     }
 
-    RedisModule_Call(ctx, "DEL", "s", fmt(ctx, "schema:%s", argv[1]));
-    RedisModule_Call(ctx, "DEL", "s", fmt(ctx, "table:%s:id", argv[1]));
-    RedisModule_Call(ctx, "DEL", "s", fmt(ctx, "idx:meta:%s", argv[1]));
+    RedisModule_Call(ctx, "DEL", "s", fmt(ctx, "schema:{%s}", argv[1]));
+    RedisModule_Call(ctx, "DEL", "s", fmt(ctx, "{%s}:id", argv[1]));
+    RedisModule_Call(ctx, "DEL", "s", fmt(ctx, "{%s}:idx:meta", argv[1]));
     RedisModule_Call(ctx, "DEL", "s", rowsSet);
     return RedisModule_ReplyWithSimpleString(ctx, "OK");
 }

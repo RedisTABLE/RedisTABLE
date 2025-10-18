@@ -54,6 +54,9 @@ dkms.conf
 # debug information files
 *.dwo
 
+# Redis Persistent files
+*.rdb
+
 # Coverage files
 *.gcda
 *.gcno
