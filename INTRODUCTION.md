@@ -1,13 +1,13 @@
 # RedisTABLE - Introduction
 
-**Version**: 1.0.0  
+**Version**: 1.1.0  
 **Last Updated**: October 2025
 
 ---
 
 ## What is RedisTABLE?
 
-RedisTABLE is a Redis module that brings **SQL-like table abstractions** to Redis, enabling structured data storage with schemas, indexes, and query capabilities—all while maintaining Redis's in-memory speed.
+RedisTABLE is a Redis module that brings **SQL-like table abstractions** to Redis, enabling structured data storage with schemas, indexes, and query capabilities—all while maintaining Redis's in-memory speed. **Now with full Redis Cluster support!**
 
 ```bash
 # Traditional Redis - Manual key management
@@ -47,10 +47,11 @@ RedisTABLE fills the gap between raw Redis and full SQL databases:
 | **Structure** | ❌ Manual | ✅ Schemas | ✅ Schemas |
 | **Queries** | ❌ Manual | ✅ WHERE clauses | ✅ Full SQL |
 | **Indexes** | ❌ Manual | ✅ Automatic | ✅ Automatic |
+| **Clustering** | ✅ Manual sharding | ✅ Automatic (v1.1.0) | ✅ Built-in |
 | **Complexity** | Low | Low | High |
 | **Setup** | None | Load module | Install DB |
 
-**RedisTABLE provides the sweet spot**: Redis speed + table structure + automatic indexing.
+**RedisTABLE provides the sweet spot**: Redis speed + table structure + automatic indexing + cluster support.
 
 ---
 
@@ -498,13 +499,20 @@ TABLE.SELECT analytics.events WHERE user_id=123
 ### 5. **Scalability Considerations**
 
 **Optimal for**:
-- ✅ Small to medium datasets (1K - 1M rows)
+- ✅ Small to medium datasets (1K - 1M rows per table)
 - ✅ High read/write throughput
 - ✅ Low-latency requirements (<5ms)
 - ✅ Structured data with simple queries
+- ✅ **Horizontal scaling with Redis Cluster** (v1.1.0+)
+
+**Redis Cluster Support** (v1.1.0):
+- ✅ All table data co-located on same shard using hash tags
+- ✅ No cross-shard queries needed
+- ✅ Scale by adding more cluster nodes
+- ✅ Automatic shard distribution
 
 **Not optimal for**:
-- ❌ Very large datasets (>10M rows)
+- ❌ Very large single tables (>10M rows)
 - ❌ Complex queries (JOINs, aggregations)
 - ❌ Data that must persist to disk
 - ❌ ACID transactions across tables
@@ -539,6 +547,11 @@ TABLE.SELECT analytics.events WHERE user_id=123
 6. **Redis-only environments**
    - Can't add external databases
    - Must work within Redis ecosystem
+
+7. **Horizontal scaling needs**
+   - Need to distribute tables across shards
+   - Redis Cluster deployment (v1.1.0+)
+   - High availability requirements
 
 ---
 
@@ -617,8 +630,12 @@ git clone <repository-url>
 cd RedisTABLE
 make build
 
-# Start Redis with module
+# Start Redis with module (single instance)
 redis-server --loadmodule ./redistable.so
+
+# Or start with Redis Cluster (v1.1.0+)
+redis-server --cluster-enabled yes \
+             --loadmodule ./redistable.so
 ```
 
 ### First Table
@@ -659,6 +676,7 @@ redis-cli TABLE.SELECT myapp.users WHERE email=john@example.com
 - ✅ **Reduced costs** - Less infrastructure
 - ✅ **Production-safe** - Non-blocking operations
 - ✅ **Easy to deploy** - Single Redis module
+- ✅ **Horizontally scalable** - Redis Cluster support (v1.1.0+)
 
 ### The Bottom Line
 
@@ -666,16 +684,18 @@ redis-cli TABLE.SELECT myapp.users WHERE email=john@example.com
 - **Structure** without complexity
 - **Speed** without sacrificing features
 - **Simplicity** without limiting functionality
+- **Scalability** without cross-shard complexity (v1.1.0+)
 
 Perfect for session management, feature flags, API rate limiting, real-time analytics, and any use case requiring fast, structured data with simple queries.
 
 ---
 
-**Version**: 1.0.0  
-**Status**: Production-Ready  
+**Version**: 1.1.0  
+**Status**: Production-Ready with Redis Cluster Support  
 **License**: MIT
 
 For more information:
 - [README.md](README.md) - Quick start and command reference
 - [USER_GUIDE.md](USER_GUIDE.md) - Comprehensive user manual
+- [CLUSTER_SUPPORT.md](CLUSTER_SUPPORT.md) - Redis Cluster deployment guide
 - [PRODUCTION_NOTES.md](PRODUCTION_NOTES.md) - Production deployment guide

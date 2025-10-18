@@ -1,9 +1,9 @@
 # RedisTABLE - Configuration Guide
 
-**Version**: 1.0.0  
-**Last Updated**: 2025-10-16
+**Version**: 1.1.0  
+**Last Updated**: 2025-10-18
 
-Complete guide to configuring RedisTABLE module.
+Complete guide to configuring RedisTABLE module for single instance and Redis Cluster deployments.
 
 ---
 
@@ -11,7 +11,8 @@ Complete guide to configuring RedisTABLE module.
 
 RedisTABLE supports configuration through:
 1. **Module load-time parameters** - Set when loading the module
-2. **module.conf file** - Configuration file (planned for future releases)
+2. **Redis Cluster settings** - For cluster deployments (v1.1.0+)
+3. **module.conf file** - Configuration file (planned for future releases)
 
 ---
 
@@ -112,6 +113,125 @@ redis-server \
   --maxmemory 16gb \
   --maxmemory-policy noeviction
 ```
+
+---
+
+## Redis Cluster Configuration (v1.1.0+)
+
+### Overview
+
+RedisTABLE v1.1.0+ fully supports Redis Cluster through hash tags. All table data is automatically co-located on the same shard.
+
+### Basic Cluster Setup
+
+```bash
+# Start cluster nodes with RedisTABLE
+redis-server \
+  --port 7000 \
+  --cluster-enabled yes \
+  --cluster-config-file nodes-7000.conf \
+  --cluster-node-timeout 5000 \
+  --loadmodule /path/to/redistable.so max_scan_limit 200000 \
+  --maxmemory 4gb \
+  --maxmemory-policy allkeys-lru \
+  --appendonly yes
+
+# Repeat for all nodes (7001, 7002, 7003, 7004, 7005)
+
+# Create cluster
+redis-cli --cluster create \
+  127.0.0.1:7000 127.0.0.1:7001 127.0.0.1:7002 \
+  127.0.0.1:7003 127.0.0.1:7004 127.0.0.1:7005 \
+  --cluster-replicas 1
+```
+
+### Cluster Configuration File
+
+```conf
+# Enable cluster mode
+cluster-enabled yes
+
+# Cluster configuration file (auto-generated)
+cluster-config-file nodes.conf
+
+# Node timeout (milliseconds)
+cluster-node-timeout 5000
+
+# Load RedisTABLE module
+loadmodule /path/to/redistable.so max_scan_limit 200000
+
+# Memory settings
+maxmemory 4gb
+maxmemory-policy allkeys-lru
+
+# Persistence for cluster
+appendonly yes
+appendfsync everysec
+```
+
+### Key Co-location
+
+All keys for a table use hash tags `{namespace.table}`:
+
+```bash
+# All these keys are on the same shard:
+schema:{myapp.users}
+{myapp.users}:1
+{myapp.users}:2
+{myapp.users}:rows
+{myapp.users}:idx:name:John
+{myapp.users}:idx:meta
+{myapp.users}:id
+```
+
+### Verify Co-location
+
+```bash
+# Check which slot owns the table
+redis-cli CLUSTER KEYSLOT "{myapp.users}:1"
+redis-cli CLUSTER KEYSLOT "{myapp.users}:2"
+redis-cli CLUSTER KEYSLOT "{myapp.users}:idx:name:John"
+
+# All should return the same slot number
+```
+
+### Cluster Client Configuration
+
+**Python (redis-py-cluster)**:
+```python
+from redis.cluster import RedisCluster
+
+rc = RedisCluster(host='localhost', port=7000)
+rc.execute_command('TABLE.NAMESPACE.CREATE', 'myapp')
+rc.execute_command('TABLE.SCHEMA.CREATE', 'myapp.users', 
+                    'id:integer:hash', 'name:string:hash')
+rc.execute_command('TABLE.INSERT', 'myapp.users', 'id=1', 'name=John')
+```
+
+**Node.js (ioredis)**:
+```javascript
+const Redis = require('ioredis');
+
+const cluster = new Redis.Cluster([
+  { port: 7000, host: '127.0.0.1' },
+  { port: 7001, host: '127.0.0.1' },
+  { port: 7002, host: '127.0.0.1' }
+]);
+
+await cluster.call('TABLE.NAMESPACE.CREATE', 'myapp');
+await cluster.call('TABLE.SCHEMA.CREATE', 'myapp.users', 
+                   'id:integer:hash', 'name:string:hash');
+```
+
+### Cluster Best Practices
+
+1. **Use replicas**: Always configure `--cluster-replicas 1` or higher
+2. **Monitor shard distribution**: Check `CLUSTER SLOTS` regularly
+3. **Plan table distribution**: Tables with similar names may end up on different shards
+4. **Test failover**: Verify application handles master failover correctly
+5. **Use cluster-aware clients**: Ensure clients support Redis Cluster protocol
+
+See [CLUSTER_SUPPORT.md](CLUSTER_SUPPORT.md) for comprehensive cluster deployment guide.
 
 ---
 
@@ -550,20 +670,35 @@ max_table_size 10000000
 
 ## Summary
 
-### Current Configuration (v1.0.0)
+### Current Configuration (v1.1.0)
 
 **Available**:
 - ✅ max_scan_limit - Module load parameter
+- ✅ Redis Cluster support - Hash tag co-location (v1.1.0)
 
-**Syntax**:
+**Single Instance Syntax**:
 ```bash
 redis-server --loadmodule ./redistable.so max_scan_limit <value>
 ```
 
-**Recommended**:
+**Cluster Syntax**:
+```bash
+redis-server \
+  --cluster-enabled yes \
+  --loadmodule ./redistable.so max_scan_limit <value>
+```
+
+**Recommended max_scan_limit**:
 - OLTP: 50,000 - 100,000
 - Analytics: 500,000 - 1,000,000
 - Mixed: 100,000 - 200,000
+- Cluster: Same as single instance
+
+**Cluster Features (v1.1.0)**:
+- ✅ Automatic table co-location using hash tags
+- ✅ No cross-shard queries
+- ✅ Horizontal scalability
+- ✅ High availability with replicas
 
 ### Future Configuration
 
@@ -571,5 +706,9 @@ See `module.conf` for planned options in future releases.
 
 ---
 
-**Version**: 1.0.0  
-**Last Updated**: 2025-10-16
+**Version**: 1.1.0  
+**Last Updated**: 2025-10-18
+
+**See Also**:
+- [CLUSTER_SUPPORT.md](CLUSTER_SUPPORT.md) - Comprehensive cluster deployment guide
+- [PRODUCTION_NOTES.md](PRODUCTION_NOTES.md) - Production deployment best practices

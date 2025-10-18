@@ -1,8 +1,8 @@
 # RedisTABLE - Production Deployment Guide
 
-**Version**: 1.0.0  
-**Status**: Production-Ready (with documented limitations)  
-**Last Updated**: 2025-10-16
+**Version**: 1.1.0  
+**Status**: Production-Ready with Redis Cluster Support  
+**Last Updated**: 2025-10-18
 
 ---
 
@@ -15,17 +15,21 @@
 - ✅ **Configurable scan limits** - Tune based on workload (1K to 10M rows)
 - ✅ **Dynamic memory allocation** - No arbitrary limits
 - ✅ **Handles large datasets** - With proper configuration
+- ✅ **Redis Cluster support** - Hash tags for table co-location (v1.1.0)
+- ✅ **Horizontal scaling** - Distribute tables across cluster shards (v1.1.0)
 
 #### Reliability
 - ✅ **100% test coverage** - 93/93 tests passing
 - ✅ **Memory safe** - Automatic memory management
 - ✅ **Proper error handling** - All edge cases covered
 - ✅ **Clear error messages** - User-friendly diagnostics
+- ✅ **Cluster-safe operations** - All table data on same shard (v1.1.0)
 
 #### Performance
 - ✅ **Hash indexes** - O(1) equality lookups
 - ✅ **Efficient queries** - Optimized for indexed columns
 - ✅ **Memory efficient** - Minimal overhead per row
+- ✅ **No cross-shard queries** - Single-shard operations in cluster mode (v1.1.0)
 
 ---
 
@@ -118,7 +122,7 @@ make test
 
 ### Step 2: Configure Redis
 
-#### Option A: Command Line
+#### Option A: Single Instance (Command Line)
 
 ```bash
 # Basic configuration
@@ -137,11 +141,47 @@ redis-server \
   --save 60 10000
 ```
 
-#### Option B: redis.conf
+#### Option B: Redis Cluster (v1.1.0+)
+
+```bash
+# Start cluster node with RedisTABLE
+redis-server \
+  --port 7000 \
+  --cluster-enabled yes \
+  --cluster-config-file nodes-7000.conf \
+  --cluster-node-timeout 5000 \
+  --loadmodule /path/to/redistable.so max_scan_limit 200000 \
+  --maxmemory 4gb \
+  --maxmemory-policy allkeys-lru \
+  --appendonly yes
+
+# Repeat for all cluster nodes (7001, 7002, etc.)
+
+# Create cluster
+redis-cli --cluster create \
+  127.0.0.1:7000 127.0.0.1:7001 127.0.0.1:7002 \
+  127.0.0.1:7003 127.0.0.1:7004 127.0.0.1:7005 \
+  --cluster-replicas 1
+```
+
+**Cluster Benefits (v1.1.0)**:
+- ✅ All table data co-located on same shard (hash tags)
+- ✅ No cross-shard queries
+- ✅ Horizontal scalability
+- ✅ High availability with automatic failover
+
+See [CLUSTER_SUPPORT.md](CLUSTER_SUPPORT.md) for detailed cluster deployment guide.
+
+#### Option C: redis.conf
 
 ```conf
 # Load RedisTABLE module
 loadmodule /path/to/redistable.so max_scan_limit 200000
+
+# For Redis Cluster (v1.1.0+)
+cluster-enabled yes
+cluster-config-file nodes.conf
+cluster-node-timeout 5000
 
 # Memory settings
 maxmemory 4gb
@@ -502,17 +542,21 @@ redis-cli TABLE.SCHEMA.VIEW <namespace.table>
 
 ## Production Certification
 
-**RedisTABLE v1.0.0 is production-ready for:**
+**RedisTABLE v1.1.0 is production-ready for:**
 - ✅ OLTP workloads with proper indexing
 - ✅ Read-heavy applications
 - ✅ Analytics on dedicated instances
 - ✅ Batch processing with appropriate limits
+- ✅ **Redis Cluster deployments** (v1.1.0+)
+- ✅ **High-availability environments** (v1.1.0+)
+- ✅ **Horizontally scaled architectures** (v1.1.0+)
 
 **Recommended for production IF:**
 - ✅ Schema changes run during maintenance windows
 - ✅ Appropriate `max_scan_limit` configured
 - ✅ Monitoring and alerting in place
 - ✅ Team aware of DROP INDEX limitation
+- ✅ **Cluster mode enabled for HA/scaling** (v1.1.0+)
 
 **Not recommended IF:**
 - ❌ Frequent schema changes during peak hours required
@@ -526,6 +570,7 @@ redis-cli TABLE.SCHEMA.VIEW <namespace.table>
 ### Documentation
 - [README.md](README.md) - Quick start and overview
 - [USER_GUIDE.md](USER_GUIDE.md) - Comprehensive user guide
+- [CLUSTER_SUPPORT.md](CLUSTER_SUPPORT.md) - Redis Cluster deployment guide (v1.1.0)
 - [CONFIGURATION_GUIDE.md](CONFIGURATION_GUIDE.md) - Configuration details
 - [tests/TESTING.md](tests/TESTING.md) - Testing guide
 
@@ -534,13 +579,14 @@ redis-cli TABLE.SCHEMA.VIEW <namespace.table>
 - Check logs for error messages
 - Test in staging before production
 - Run `make test` to verify installation
+- See CLUSTER_SUPPORT.md for cluster-specific guidance
 
 ---
 
-**Recommendation**: **Deploy to production with documented limitations. Plan schema changes during maintenance windows.**
+**Recommendation**: **Deploy to production with documented limitations. Plan schema changes during maintenance windows. Use Redis Cluster for high availability and horizontal scaling (v1.1.0+).**
 
 ---
 
-**Version**: 1.0.0  
-**Last Updated**: 2025-10-16  
-**Status**: Production-Ready (with documented limitations)
+**Version**: 1.1.0  
+**Last Updated**: 2025-10-18  
+**Status**: Production-Ready with Redis Cluster Support
